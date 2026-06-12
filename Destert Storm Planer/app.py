@@ -3,11 +3,13 @@ import pandas as pd
 import json
 from PIL import Image, ImageDraw, ImageFont
 import io
+from streamlit_sortables import sort_items
 
+# Seitenkonfiguration (Muss ganz oben stehen)
 st.set_page_config(page_title="Last War: Desert Storm Planner", layout="wide")
 
 # -----------------------------------------------------------------------------
-# 1. INITIALIZATION & CACHE MANAGEMENT
+# 1. INITIALISIERUNG DER SESSION STATES
 # -----------------------------------------------------------------------------
 if "players_A" not in st.session_state:
     st.session_state.players_A = []
@@ -19,10 +21,10 @@ if "assignments_B" not in st.session_state:
     st.session_state.assignments_B = {}
 
 st.title("⚔️ Last War: Survival - Desert Storm Planner")
-st.write("Plan your alliance teams, distribute them strategically, and generate tactical roster images.")
+st.write("Plane deine Allianz-Teams, verteile sie strategisch und generiere taktische Roster-Bilder.")
 
 # -----------------------------------------------------------------------------
-# 2. INFORMATION TAB (RULES IN EN / DE)
+# 2. INFORMATIONSTAB (REGELN IN EN / DE)
 # -----------------------------------------------------------------------------
 tab_info, tab_A, tab_B = st.tabs(["ℹ️ Rules / Regeln", "👥 Group A", "👥 Group B"])
 
@@ -84,7 +86,7 @@ with tab_info:
         st.table(rules_df_de)
 
 # -----------------------------------------------------------------------------
-# 3. IMPORT / EXPORT CONFIGURATION
+# 3. DATEN-MANAGEMENT (SIDEBAR)
 # -----------------------------------------------------------------------------
 st.sidebar.header("💾 Data Management")
 
@@ -111,7 +113,7 @@ if uploaded_file is not None:
         st.sidebar.error(f"Error loading file: {e}")
 
 # -----------------------------------------------------------------------------
-# 4. PLAYER INPUT SECTION
+# 4. SPIELER-EINGABEBEREICH (FORMULARE & BULK)
 # -----------------------------------------------------------------------------
 def player_input_section(group_key):
     st.subheader(f"Manage Players for {group_key}")
@@ -124,12 +126,13 @@ def player_input_section(group_key):
         
         submitted = st.form_submit_button("Add Player")
         if submitted and name:
-            new_player = {"name": name, "power": power, "commitment": commitment}
+            new_player = {"name": name.strip(), "power": power, "commitment": commitment}
             if group_key == "Group A":
                 st.session_state.players_A.append(new_player)
             else:
                 st.session_state.players_B.append(new_player)
             st.success(f"Added {name}!")
+            st.rerun()
 
     with st.expander("📝 Bulk Import (Text Copy-Paste)"):
         bulk_text = st.text_area("Format: Name, Power, Commitment (One player per line)", 
@@ -145,6 +148,7 @@ def player_input_section(group_key):
                             if group_key == "Group A": st.session_state.players_A.append(p_dict)
                             else: st.session_state.players_B.append(p_dict)
                         except: pass
+            st.success("Bulk data loaded!")
             st.rerun()
 
     current_players = st.session_state.players_A if group_key == "Group A" else st.session_state.players_B
@@ -152,6 +156,8 @@ def player_input_section(group_key):
         df = pd.DataFrame(current_players)
         st.dataframe(df.sort_values(by="power", ascending=False), use_container_width=True)
         if st.button(f"🗑️ Clear {group_key} List"):
+            if group_key == "Group A": st.session_state.assignments_A = {}
+            else: st.session_state.assignments_B = {}
             if group_key == "Group A": st.session_state.players_A = []
             else: st.session_state.players_B = []
             st.rerun()
@@ -164,7 +170,7 @@ with tab_B:
     player_input_section("Group B")
 
 # -----------------------------------------------------------------------------
-# 5. ALGORITHM: DESERT STORM PLANNING
+# 5. ALGORITHMUS: WÜSTENSTURM-BERECHNUNG
 # -----------------------------------------------------------------------------
 def plan_group(players):
     if not players:
@@ -215,39 +221,68 @@ def plan_group(players):
             
     return assignments
 
-# -----------------------------------------------------------------------------
-# 6. ACTION CONTROL & MANUAL SWAPS
-# -----------------------------------------------------------------------------
 st.write("---")
 if st.button("🚀 Plan Desert Storm", type="primary"):
     st.session_state.assignments_A = plan_group(st.session_state.players_A)
     st.session_state.assignments_B = plan_group(st.session_state.players_B)
     st.success("Calculated strategic lane setups successfully!")
 
+# -----------------------------------------------------------------------------
+# 6. DRAG & DROP STRATEGIE-BOARD (STABILISIERTE VERSION GEGEN DATENVERLUST)
+# -----------------------------------------------------------------------------
 def display_and_adjust_assignments(group_key):
     assignments = st.session_state.assignments_A if group_key == "Group A" else st.session_state.assignments_B
+    
     if not assignments:
+        st.info(f"Please click 'Plan Desert Storm' to create the initial setup for {group_key}.")
         return
-    
-    st.subheader(f"Setup {group_key}")
-    all_buildings = list(assignments.keys())
-    
-    for b in all_buildings:
-        st.markdown(f"**🏢 {b}**")
-        players_in_b = assignments[b]
-        if not players_in_b:
-            st.text(" Empty")
-        else:
-            for idx, p in enumerate(players_in_b):
-                suffix = " ❓" if p['commitment'] == 'Maybe' else ""
-                col_p, col_move = st.columns([3, 2])
-                col_p.write(f"- {p['name']} ({p['power']}M){suffix}")
-                
-                new_b = col_move.selectbox(f"Move {p['name']}", options=all_buildings, index=all_buildings.index(b), key=f"move_{group_key}_{b}_{idx}_{p['name']}")
-                if new_b != b:
-                    player_to_move = assignments[b].pop(idx)
-                    assignments[new_b].append(player_to_move)
-                    st.rerun()
+
+    st.subheader(f"🖱️ Interactive Drag & Drop Board - {group_key}")
+    st.caption("Ziehe Spieler in andere Gebäude oder ändere die Reihenfolge. Das Bild wird basierend darauf erstellt.")
+
+    sortable_data = []
+    for building, players in assignments.items():
+        player_strings = [
+            f"{p['name']} ({p['power']}M){' ❓' if p['commitment'] == 'Maybe' else ''}" 
+            for p in players
+        ]
+        sortable_data.append({"header": building, "items": player_strings})
+
+    # Drag & Drop Widget aufrufen
+    updated_data = sort_items(
+        sortable_data, 
+        multi_containers=True, 
+        direction="vertical", 
+        key=f"sortable_board_{group_key}"
+    )
+
+    # GUARD LOGIC: Verhindert das Leeren beim Rerun durch den "Generate Image"-Klick
+    if updated_data:
+        temp_assignments = {}
+        all_players = st.session_state.players_A if group_key == "Group A" else st.session_state.players_B
+        found_any_player = False
+        
+        for section in updated_data:
+            building_name = section["header"]
+            item_list = section["items"]
+            assigned_players = []
+            
+            for item_str in item_list:
+                # Extrahiere sauber den reinen Namen vor dem String-Zusatz " ("
+                extracted_name = item_str.split(" (")[0].strip()
+                original_player = next((p for p in all_players if p["name"] == extracted_name), None)
+                if original_player:
+                    assigned_players.append(original_player)
+                    found_any_player = True
+            
+            temp_assignments[building_name] = assigned_players
+        
+        # WICHTIG: Nur in den echten State schreiben, wenn die Komponente valide Daten geliefert hat
+        if found_any_player:
+            if group_key == "Group A":
+                st.session_state.assignments_A = temp_assignments
+            else:
+                st.session_state.assignments_B = temp_assignments
 
 col_col1, col_col2 = st.columns(2)
 with col_col1:
@@ -256,135 +291,159 @@ with col_col2:
     display_and_adjust_assignments("Group B")
 
 # -----------------------------------------------------------------------------
-# 7. PIL TACTICAL GRAPHIC GENERATOR (MATCHING image_5a7b58.jpg GRID & COLORS)
+# 7. PIL GRAFIKGENERATOR (ÜBERLAPPUNGEN & SYMBOLE KORRIGIERT)
 # -----------------------------------------------------------------------------
 def generate_tactical_image(group_name, assignments):
-    # Abmessungen leicht erhöht für mehr vertikalen Atemraum
-    width, height = 800, 1150
+    width = 900
     
-    if group_name == "Group A":
-        bg_color = "#0a110d"       # Dunkles taktisches Grün
-        border_main = "#19543e"   # Grüner Rahmen
-        header_text = "#48ffb0"   # Grüner Titel
+    # Schriftarten definieren
+    try:
+        font_alliance = ImageFont.truetype("arial.ttf", 60)
+        font_sub = ImageFont.truetype("arial.ttf", 24)
+        font_b_title = ImageFont.truetype("arial.ttf", 22)
+        font_b_sub = ImageFont.truetype("arial.ttf", 16)
+        font_p_text = ImageFont.truetype("arial.ttf", 20)
+    except:
+        font_alliance = font_sub = font_b_title = font_b_sub = font_p_text = ImageFont.load_default()
+
+    # --- HILFSFUNKTION FÜR DYNAMISCHE HÖHENBERECHNUNG ---
+    # Berechnet, wie hoch eine Karte sein muss, basierend auf der Spieleranzahl
+    def get_card_height(players):
+        base_header_space = 105 # Platz für Titel, Subtitel und "Members:"
+        player_count = max(1, len(players)) # Mindestens Platz für eine "Leer"-Zeile oder Infos
+        player_space = player_count * 32    # Jede Spielerzeile benötigt 32px
+        padding_bottom = 20
+        return base_header_space + player_space + padding_bottom
+
+    # Farbschemata
+    themes = {
+        "Group A": {"bg": "#0a110d", "border": "#19543e", "header": "#48ffb0"},
+        "Group B": {"bg": "#0a0f16", "border": "#1a3a5f", "header": "#4da6ff"}
+    }
+    theme = themes[group_name]
+
+    # --- 1. GEBÄUDE-GRID POSITIONIERUNG & HÖHEN-ANALYSE ---
+    start_x = 45
+    h_width = 190
+    h_gap = 18
+    mid_width = 399
+    
+    # Zeile 1: Krankenhäuser
+    hospitals = [("Hospital I", "STEELHEARTS"), ("Hospital II", "UNSHAKABLES"), ("Hospital III", "LIFEKEEPERS"), ("Hospital IV", "GUARDIANS")]
+    y_top = 220
+    
+    max_h_height = 0
+    hospital_heights = []
+    for name, _ in hospitals:
+        h = get_card_height(assignments.get(name, []))
+        hospital_heights.append(h)
+        if h > max_h_height:
+            max_h_height = h
+            
+    # Zeile 2: Strategic Centers (Tech / Info)
+    y_mid = y_top + max_h_height + 25
+    h_tech = get_card_height(assignments.get("Tech Center", []))
+    h_info = get_card_height(assignments.get("Info Center", []))
+    max_mid_height = max(h_tech, h_info)
+    
+    # Zeile 3: Raffinerien
+    y_ref = y_mid + max_mid_height + 25
+    h_ref1 = get_card_height(assignments.get("Oil Refinery I", []))
+    h_ref2 = get_card_height(assignments.get("Oil Refinery II", []))
+    max_ref_height = max(h_ref1, h_ref2)
+    
+    # Zeile 4: Jumper
+    y_j = y_ref + max_ref_height + 25
+    h_jumper = get_card_height(assignments.get("Jumper", []))
+    
+    # Zeile 5: Reserve-Text Umbruch Logik & Höhe
+    all_res_players = assignments.get("Reserve", [])
+    res_strings = [f"{p['name']}{' (?)' if p['commitment'] == 'Maybe' else ''}" for p in all_res_players]
+    
+    lines = []
+    if res_strings:
+        current_line = ""
+        for s in res_strings:
+            test_line = s if not current_line else current_line + "   |   " + s
+            if len(test_line) < 80: 
+                current_line = test_line
+            else:
+                lines.append(current_line)
+                current_line = s
+        lines.append(current_line)
     else:
-        bg_color = "#0a0f16"       # Dunkles taktisches Blau
-        border_main = "#1a3a5f"   # Blauer Rahmen
-        header_text = "#4da6ff"   # Blauer Titel
+        lines = ["No backup units assigned."]
         
-    img = Image.new("RGB", (width, height), color=bg_color)
+    reserve_box_height = 50 + (len(lines) * 32) + 20
+    y_r_top = y_j + h_jumper + 40
+    y_r_bottom = y_r_top + reserve_box_height
+    
+    # Gesamthöhe des Bildes komplett dynamisch zusammensetzen
+    dynamic_height = y_r_bottom + 110
+    
+    # --- 2. BILD ERSTELLEN UND ZEICHNEN ---
+    img = Image.new("RGB", (width, int(dynamic_height)), color=theme["bg"])
     draw = ImageDraw.Draw(img)
     
-    try:
-        font_alliance = ImageFont.truetype("arial.ttf", 48)
-        font_sub = ImageFont.truetype("arial.ttf", 18)
-        font_b_title = ImageFont.truetype("arial.ttf", 15)
-        font_b_sub = ImageFont.truetype("arial.ttf", 12)
-        font_p_text = ImageFont.truetype("arial.ttf", 14)
-    except:
-        font_alliance = ImageFont.load_default()
-        font_sub = ImageFont.load_default()
-        font_b_title = ImageFont.load_default()
-        font_b_sub = ImageFont.load_default()
-        font_p_text = ImageFont.load_default()
-        
-    # --- HEADER SECTION ---
-    draw.text((width//2, 50), "LAST WAR", fill="#ffffff", font=font_alliance, anchor="mm")
-    draw.text((width//2, 100), f"DESERT STORM OPERATIONAL SETUP - {group_name.upper()}", fill=header_text, font=font_sub, anchor="mm")
-    draw.text((width//2, 130), "WE STAND UNITED, STRIKE HARD, AND GIVE NO GROUND.", fill="#aaaaaa", font=font_sub, anchor="mm")
+    # Header
+    draw.text((width//2, 60), "LAST WAR", fill="#ffffff", font=font_alliance, anchor="mm")
+    draw.text((width//2, 120), f"DESERT STORM SETUP - {group_name.upper()}", fill=theme["header"], font=font_sub, anchor="mm")
+    draw.text((width//2, 155), "WE STAND UNITED, STRIKE HARD, AND GIVE NO GROUND.", fill="#aaaaaa", font=font_sub, anchor="mm")
+    draw.line([(50, 190), (width - 50, 190)], fill="#444444", width=3)
     
-    draw.line([(40, 160), (width - 40, 160)], fill="#444444", width=2)
-    
-    # --- KORRIGIERTE CARD-ZEICHNEN-FUNKTION ---
+    # Standardisierte Card-Zeichen-Funktion mit dynamischer Endhöhe y2
     def draw_card(x1, y1, x2, y2, title, subtitle, subtitle_color, players):
-        # Hintergrund & Rahmen
-        draw.rectangle([(x1, y1), (x2, y2)], outline=border_main, width=2, fill="#11151c")
+        draw.rectangle([(x1, y1), (x2, y2)], outline=theme["border"], width=3, fill="#11151c")
+        draw.line([(x1, y1 + 60), (x2, y1 + 60)], fill=theme["border"], width=2)
         
-        # Titel-Box-Höhe erweitert auf 45px, um Platz für ZWEI Zeilen zu machen
-        draw.line([(x1, y1 + 45), (x2, y1 + 45)], fill=border_main, width=1)
+        draw.text((x1 + 15, y1 + 8), title, fill="#ffffff", font=font_b_title)
+        draw.text((x1 + 15, y1 + 36), f'"{subtitle}"', fill=subtitle_color, font=font_b_sub)
+        draw.text((x1 + 15, y1 + 75), "Members:", fill="#777777", font=font_b_sub)
         
-        # Zeile 1: Hauptname des Gebäudes (linksbündig)
-        draw.text((x1 + 10, y1 + 6), title, fill="#ffffff", font=font_b_title)
-        
-        # Zeile 2: Taktischer Untertitel (SAUBER DARUNTER platziert statt überlappend!)
-        draw.text((x1 + 10, y1 + 25), f'"{subtitle}"', fill=subtitle_color, font=font_b_sub)
-        
-        # Mitglieder-Liste
-        draw.text((x1 + 10, y1 + 55), "Members:", fill="#777777", font=font_p_text)
-        
-        curr_y = y1 + 78
-        for p in players:
-            maybe_suffix = " (?)" if p["commitment"] == "Maybe" else ""
-            p_display = f"- {p['name']} ({p['power']}M){maybe_suffix}"
-            
-            text_color = "#ffffff" if p["commitment"] == "Yes" else "#888888"
-            draw.text((x1 + 10, curr_y), p_display, fill=text_color, font=font_p_text)
-            curr_y += 22
+        curr_y = y1 + 105
+        if not players:
+            draw.text((x1 + 15, curr_y), "• Empty", fill="#555555", font=font_p_text)
+        else:
+            for p in players:
+                maybe_suffix = " (?)" if p["commitment"] == "Maybe" else ""
+                p_display = f"• {p['name']}{maybe_suffix}"
+                text_color = "#ffffff" if p["commitment"] == "Yes" else "#888888"
+                draw.text((x1 + 15, curr_y), p_display, fill=text_color, font=font_p_text)
+                curr_y += 32
 
-    # --- ROW 1: HOSPITALS (4 Spalten angepasst für 800px Breite) ---
-    h_width = 165
-    h_gap = 14
-    start_x = 40
-    y_top_row = 190
-    y_bot_row = 380
-    
-    hospitals = ["Hospital I", "Hospital II", "Hospital III", "Hospital IV"]
-    h_subs = ["STEELHEARTS", "UNSHAKABLES", "LIFEKEEPERS", "GUARDIANS"]
-    
-    for i, h_name in enumerate(hospitals):
+    # Krankenhäuser zeichnen (Nutzen alle die maximale Zeilenhöhe für symmetrische Optik der Reihe)
+    for i, (name, sub) in enumerate(hospitals):
         bx1 = start_x + i * (h_width + h_gap)
-        bx2 = bx1 + h_width
-        draw_card(bx1, y_top_row, bx2, y_bot_row, h_name, h_subs[i], "#4caf50", assignments.get(h_name, []))
+        draw_card(bx1, y_top, bx1 + h_width, y_top + max_h_height, name, sub, "#4caf50", assignments.get(name, []))
         
-    # --- ROW 2: STRATEGIC BUILDINGS (2 Spalten) ---
-    mid_width = 353
-    mid_gap = 14
-    y_mid_top = 405
-    y_mid_bot = 565
-    
-    # Tech Center
-    draw_card(start_x, y_mid_top, start_x + mid_width, y_mid_bot, "Tech Center", "THE SUPPLIERS", "#ffb300", assignments.get("Tech Center", []))
-    # Info Center
-    draw_card(start_x + mid_width + mid_gap, y_mid_top, width - start_x, y_mid_bot, "Info Center", "THE SCOUTS", "#ffb300", assignments.get("Info Center", []))
+    # Centers zeichnen
+    draw_card(start_x, y_mid, start_x + mid_width, y_mid + max_mid_height, "Tech Center", "THE SUPPLIERS", "#ffb300", assignments.get("Tech Center", []))
+    draw_card(start_x + mid_width + 12, y_mid, width - start_x, y_mid + max_mid_height, "Info Center", "THE SCOUTS", "#ffb300", assignments.get("Info Center", []))
 
-    # --- ROW 3: REFINERIES (2 Spalten) ---
-    y_ref_top = 590
-    y_ref_bot = 750
-    # Oil Refinery I
-    draw_card(start_x, y_ref_top, start_x + mid_width, y_ref_bot, "Oil Refinery I", "EXTRACTORS A", "#00bcd4", assignments.get("Oil Refinery I", []))
-    # Oil Refinery II
-    draw_card(start_x + mid_width + mid_gap, y_ref_top, width - start_x, y_ref_bot, "Oil Refinery II", "EXTRACTORS B", "#00bcd4", assignments.get("Oil Refinery II", []))
+    # Raffinerien zeichnen
+    draw_card(start_x, y_ref, start_x + mid_width, y_ref + max_ref_height, "Oil Refinery I", "EXTRACTORS A", "#00bcd4", assignments.get("Oil Refinery I", []))
+    draw_card(start_x + mid_width + 12, y_ref, width - start_x, y_ref + max_ref_height, "Oil Refinery II", "EXTRACTORS B", "#00bcd4", assignments.get("Oil Refinery II", []))
 
-    # --- ROW 4: JUMPERS (Volle Breite) ---
-    y_j_top = 775
-    y_j_bot = 955
-    # "AMPERSAND / TEXT" statt fehlerhaftem Emoji-Symbol, um leere Boxen zu vermeiden
-    draw_card(start_x, y_j_top, width - start_x, y_j_bot, "JUMPER SQUAD", "THE ASSAULT SQUAD", "#f44336", assignments.get("Jumper", []))
+    # Jumper zeichnen
+    draw_card(start_x, y_j, width - start_x, y_j + h_jumper, "JUMPER SQUAD", "THE ASSAULT SQUAD", "#f44336", assignments.get("Jumper", []))
 
-    # --- ROW 5: RESERVE / BACKUPS ---
-    y_r_top = 980
-    y_r_bot = 1070
+    # --- RESERVE BOX ZEICHNEN ---
+    draw.rectangle([(start_x, y_r_top), (width - start_x, y_r_bottom)], outline=theme["border"], width=3, fill="#11151c")
+    draw.text((start_x + 15, y_r_top + 15), "RESERVE UNITS", fill="#ffffff", font=font_b_title)
     
-    draw.rectangle([(start_x, y_r_top), (width - start_x, y_r_bot)], outline=border_main, width=2, fill="#11151c")
-    draw.text((start_x + 12, y_r_top + 10), "RESERVE UNITS", fill="#ffffff", font=font_b_title)
-    
-    reserve_players = assignments.get("Reserve", [])
-    if not reserve_players:
-        draw.text((start_x + 12, y_r_top + 45), "No remaining backup units assigned.", fill="#777777", font=font_p_text)
-    else:
-        res_strings = [f"{p['name']} ({p['power']}M){' (?)' if p['commitment'] == 'Maybe' else ''}" for p in reserve_players]
-        res_text = "  |  ".join(res_strings)
-        if len(res_text) > 90:
-            res_text = res_text[:87] + "..."
-        draw.text((start_x + 12, y_r_top + 45), f"Units: {res_text}", fill="#aaaaaa", font=font_p_text)
+    curr_y_res = y_r_top + 55
+    for line in lines:
+        draw.text((start_x + 15, curr_y_res), line, fill="#aaaaaa", font=font_p_text)
+        curr_y_res += 32
 
     # --- FOOTER MOTTO ---
-    draw.text((width//2, 1110), "WE HOLD THE LINE AND LEAVE THE FIELD AS VICTORS!", fill="#ffffff", font=font_sub, anchor="mm")
+    footer_y = y_r_bottom + 55
+    draw.text((width//2, footer_y), "WE HOLD THE LINE AND LEAVE THE FIELD AS VICTORS!", fill="#ffffff", font=font_sub, anchor="mm")
 
     img_byte_arr = io.BytesIO()
     img.save(img_byte_arr, format='PNG')
-    return img_byte_arr.getvalue()
-# -----------------------------------------------------------------------------
-# 8. EXPORT GRAPHICS UI
+    return img_byte_arr.getvalue()# -----------------------------------------------------------------------------
+# 8. BILDER-EXPORT UI-BEREICH
 # -----------------------------------------------------------------------------
 st.write("---")
 st.subheader("🖼️ Export Roster Visuals")
@@ -407,4 +466,4 @@ if st.button("🖼️ Generate Tactical Image", type="secondary"):
                 st.image(img_data_B)
                 st.download_button("💾 Download Image B", data=img_data_B, file_name="Desert_Storm_Group_B.png", mime="image/png")
     else:
-        st.warning("Please compute layouts using 'Plan Desert Storm' before generating graphics.")
+        st.warning("Bitte berechne zuerst ein Layout mit 'Plan Desert Storm'.")
