@@ -163,26 +163,37 @@ def player_input_section(group_key):
             st.rerun()
 
     with st.expander("📝 Bulk Import (Text Copy-Paste)"):
-        bulk_text = st.text_area("Format: Name, Power, Commitment (One player per line)", 
+        bulk_text = st.text_area("Format: Name, Power, Commitment (One player per line, 'Yes'/'Maybe' unabhängig von Groß-/Kleinschreibung)", 
                                  placeholder="Player1, 25.5, Yes\nPlayer2, 22.1, Maybe", key=f"bulk_{group_key}")
         if st.button("Load Bulk Data", key=f"btn_bulk_{group_key}"):
             lines = bulk_text.strip().split("\n")
+            skipped = 0
             for line in lines:
                 if "," in line:
                     parts = [p.strip() for p in line.split(",")]
                     if len(parts) == 3:
                         try:
-                            p_dict = {"name": parts[0], "power": float(parts[1]), "commitment": parts[2]}
+                            commitment_raw = parts[2].strip().lower()
+                            if commitment_raw == "yes":
+                                commitment_norm = "Yes"
+                            elif commitment_raw == "maybe":
+                                commitment_norm = "Maybe"
+                            else:
+                                skipped += 1
+                                continue
+                            p_dict = {"name": parts[0], "power": float(parts[1]), "commitment": commitment_norm}
                             if group_key == "Group A": st.session_state.players_A.append(p_dict)
                             else: st.session_state.players_B.append(p_dict)
                         except: pass
+            if skipped:
+                st.warning(f"{skipped} Zeile(n) übersprungen: Commitment muss 'Yes' oder 'Maybe' sein (Groß-/Kleinschreibung egal).")
             st.success("Bulk data loaded!")
             st.rerun()
 
     current_players = st.session_state.players_A if group_key == "Group A" else st.session_state.players_B
     if current_players:
         df = pd.DataFrame(current_players)
-        st.dataframe(df.sort_values(by="power", ascending=False), use_container_width=True)
+        st.dataframe(df.sort_values(by="power", ascending=False), width='stretch')
         if st.button(f"🗑️ Clear {group_key} List"):
             if group_key == "Group A": st.session_state.assignments_A = {}
             else: st.session_state.assignments_B = {}
@@ -204,8 +215,10 @@ def plan_group(players, mode="4-2"):
     if not players:
         return {}, 0
     
-    yes_players = sorted([p for p in players if p["commitment"] == "Yes"], key=lambda x: x["power"], reverse=True)
-    maybe_players = sorted([p for p in players if p["commitment"] == "Maybe"], key=lambda x: x["power"], reverse=True)
+    # Case-insensitiver Vergleich: bereits gespeicherte Daten mit "yes"/"YES"/"Yes"
+    # etc. (z.B. aus älteren Bulk-Importen) werden trotzdem korrekt erkannt.
+    yes_players = sorted([p for p in players if p["commitment"].strip().lower() == "yes"], key=lambda x: x["power"], reverse=True)
+    maybe_players = sorted([p for p in players if p["commitment"].strip().lower() == "maybe"], key=lambda x: x["power"], reverse=True)
     
     sorted_pool = yes_players + maybe_players
 
@@ -299,15 +312,22 @@ mode_option = st.radio(
 )
 
 if st.button("🚀 Plan Desert Storm", type="primary"):
-    st.session_state.assignments_A, overflow_A = plan_group(st.session_state.players_A, mode_option)
-    st.session_state.assignments_B, overflow_B = plan_group(st.session_state.players_B, mode_option)
-    st.session_state.mode_A = mode_option
-    st.session_state.mode_B = mode_option
-    st.success(f"Calculated strategic lane setups successfully! ({MODE_LABELS[mode_option]})")
-    if overflow_A:
-        st.warning(f"⚠️ Group A: {overflow_A} Spieler mit der niedrigsten Power wurden NICHT zugeordnet, da maximal 30 Personen pro Gruppe (20 an Gebäuden + 10 Reserve) unterstützt werden.")
-    if overflow_B:
-        st.warning(f"⚠️ Group B: {overflow_B} Spieler mit der niedrigsten Power wurden NICHT zugeordnet, da maximal 30 Personen pro Gruppe (20 an Gebäuden + 10 Reserve) unterstützt werden.")
+    if not st.session_state.players_A and not st.session_state.players_B:
+        st.error("⚠️ Weder für Group A noch für Group B sind Spieler eingetragen. Bitte zuerst oben im Tab 'Group A' / 'Group B' Spieler hinzufügen (einzeln oder per Bulk Import), dann erneut planen.")
+    else:
+        st.session_state.assignments_A, overflow_A = plan_group(st.session_state.players_A, mode_option)
+        st.session_state.assignments_B, overflow_B = plan_group(st.session_state.players_B, mode_option)
+        st.session_state.mode_A = mode_option
+        st.session_state.mode_B = mode_option
+        st.success(f"Calculated strategic lane setups successfully! ({MODE_LABELS[mode_option]})")
+        if not st.session_state.players_A:
+            st.warning("ℹ️ Group A hat keine Spieler - das Board für Group A bleibt leer, bis du dort Spieler einträgst.")
+        if not st.session_state.players_B:
+            st.warning("ℹ️ Group B hat keine Spieler - das Board für Group B bleibt leer, bis du dort Spieler einträgst.")
+        if overflow_A:
+            st.warning(f"⚠️ Group A: {overflow_A} Spieler mit der niedrigsten Power wurden NICHT zugeordnet, da maximal 30 Personen pro Gruppe (20 an Gebäuden + 10 Reserve) unterstützt werden.")
+        if overflow_B:
+            st.warning(f"⚠️ Group B: {overflow_B} Spieler mit der niedrigsten Power wurden NICHT zugeordnet, da maximal 30 Personen pro Gruppe (20 an Gebäuden + 10 Reserve) unterstützt werden.")
 
 # -----------------------------------------------------------------------------
 # 6. DRAG & DROP STRATEGIE-BOARD (STABILISIERTE VERSION GEGEN DATENVERLUST)
@@ -317,6 +337,11 @@ def display_and_adjust_assignments(group_key):
     
     if not assignments:
         st.info(f"Please click 'Plan Desert Storm' to create the initial setup for {group_key}.")
+        return
+
+    total_assigned_players = sum(len(v) for v in assignments.values())
+    if total_assigned_players == 0:
+        st.info(f"ℹ️ {group_key} hat aktuell keine zugeordneten Spieler. Bitte im entsprechenden Tab oben Spieler hinzufügen und danach erneut auf 'Plan Desert Storm' klicken.")
         return
 
     st.subheader(f"🖱️ Interactive Drag & Drop Board - {group_key}")
@@ -331,7 +356,7 @@ def display_and_adjust_assignments(group_key):
         for p in players:
             squad_tag = squad_state.get(p["name"])
             tag_str = f" [{squad_tag}]" if squad_tag else ""
-            maybe_str = " ❓" if p["commitment"] == "Maybe" else ""
+            maybe_str = " ❓" if p["commitment"].strip().lower() == "maybe" else ""
             player_strings.append(f"{p['name']} ({p['power']}M){tag_str}{maybe_str}")
         sortable_data.append({"header": building_display(building), "items": player_strings})
 
@@ -654,8 +679,8 @@ def generate_tactical_image(group_name, assignments, mode="4-2", squad_map=None)
         else:
             for p in players:
                 squad = squad_map.get(p["name"])  # None = kein Tag gesetzt
-                maybe_suffix = " (?)" if p["commitment"] == "Maybe" else ""
-                name_color = "#ffffff" if p["commitment"] == "Yes" else "#bbbbbb"
+                maybe_suffix = " (?)" if p["commitment"].strip().lower() == "maybe" else ""
+                name_color = "#ffffff" if p["commitment"].strip().lower() == "yes" else "#bbbbbb"
 
                 if squad:
                     # M1/M2 als deutlich sichtbares, farbiges Tag zeichnen (M1=Orange, M2=Blau)
@@ -704,21 +729,30 @@ st.write("---")
 st.subheader("🖼️ Export Roster Visuals")
 
 if st.button("🖼️ Generate Tactical Image", type="secondary"):
-    if st.session_state.assignments_A or st.session_state.assignments_B:
+    has_data_A = bool(st.session_state.assignments_A) and sum(len(v) for v in st.session_state.assignments_A.values()) > 0
+    has_data_B = bool(st.session_state.assignments_B) and sum(len(v) for v in st.session_state.assignments_B.values()) > 0
+
+    if not has_data_A and not has_data_B:
+        st.warning("Bitte berechne zuerst ein Layout mit 'Plan Desert Storm' und stelle sicher, dass mindestens eine Gruppe Spieler enthält.")
+    else:
         col_img1, col_img2 = st.columns(2)
         
-        if st.session_state.assignments_A:
+        if has_data_A:
             with col_img1:
                 st.write(f"**Group A Tactical Graphic** ({MODE_LABELS.get(st.session_state.mode_A, st.session_state.mode_A)})")
                 img_data_A = generate_tactical_image("Group A", st.session_state.assignments_A, st.session_state.mode_A, st.session_state.squad_A)
                 st.image(img_data_A)
                 st.download_button("💾 Download Image A", data=img_data_A, file_name="Desert_Storm_Group_A.png", mime="image/png")
-                
-        if st.session_state.assignments_B:
+        elif st.session_state.players_A:
+            with col_img1:
+                st.info("Group A: Bitte zuerst 'Plan Desert Storm' klicken.")
+
+        if has_data_B:
             with col_img2:
                 st.write(f"**Group B Tactical Graphic** ({MODE_LABELS.get(st.session_state.mode_B, st.session_state.mode_B)})")
                 img_data_B = generate_tactical_image("Group B", st.session_state.assignments_B, st.session_state.mode_B, st.session_state.squad_B)
                 st.image(img_data_B)
                 st.download_button("💾 Download Image B", data=img_data_B, file_name="Desert_Storm_Group_B.png", mime="image/png")
-    else:
-        st.warning("Bitte berechne zuerst ein Layout mit 'Plan Desert Storm'.")
+        elif st.session_state.players_B:
+            with col_img2:
+                st.info("Group B: Bitte zuerst 'Plan Desert Storm' klicken.")
